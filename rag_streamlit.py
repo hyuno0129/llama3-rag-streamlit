@@ -20,23 +20,19 @@ from langchain_community.vectorstores import FAISS
 
 
 # ---------------------------------------------------------
-# 1. Gemini 최신 응답에서 텍스트만 추출
+# 1. Gemini 응답에서 실제 텍스트만 추출
 # ---------------------------------------------------------
 def extract_response_text(content):
 
-    # 예전 Gemini/LangChain 응답
     if isinstance(content, str):
         return content
 
-    # 최신 Gemini content block 형식
     if isinstance(content, list):
-
         texts = []
 
         for item in content:
 
             if isinstance(item, dict):
-
                 if item.get("type") == "text":
                     text = item.get("text", "")
 
@@ -61,14 +57,13 @@ def extract_response_text(content):
 def tiktoken_len(text):
 
     tokenizer = tiktoken.get_encoding("cl100k_base")
-
     tokens = tokenizer.encode(text)
 
     return len(tokens)
 
 
 # ---------------------------------------------------------
-# 3. 업로드된 문서 읽기
+# 3. 업로드 문서 읽기
 # PDF / DOCX / PPTX
 # ---------------------------------------------------------
 def get_text(docs):
@@ -78,7 +73,6 @@ def get_text(docs):
     for doc in docs:
 
         file_name = doc.name
-
         suffix = os.path.splitext(file_name)[1]
 
         # Streamlit 업로드 파일을 임시 파일로 저장
@@ -88,7 +82,6 @@ def get_text(docs):
         ) as temp_file:
 
             temp_file.write(doc.getvalue())
-
             temp_path = temp_file.name
 
         logger.info(f"문서 처리 시작: {file_name}")
@@ -99,30 +92,25 @@ def get_text(docs):
             if file_name.lower().endswith(".pdf"):
 
                 loader = PyPDFLoader(temp_path)
-
                 documents = loader.load()
 
             # Word
             elif file_name.lower().endswith(".docx"):
 
                 loader = Docx2txtLoader(temp_path)
-
                 documents = loader.load()
 
             # PowerPoint
             elif file_name.lower().endswith(".pptx"):
 
                 loader = UnstructuredPowerPointLoader(temp_path)
-
                 documents = loader.load()
 
             else:
-
                 continue
 
             # 실제 파일명을 source에 저장
             for document in documents:
-
                 document.metadata["source"] = file_name
 
             doc_list.extend(documents)
@@ -131,7 +119,6 @@ def get_text(docs):
 
             try:
                 os.remove(temp_path)
-
             except Exception:
                 pass
 
@@ -180,7 +167,7 @@ def get_vectorstore(text_chunks):
 
 
 # ---------------------------------------------------------
-# 6. 검색된 문서를 Gemini용 Context 문자열로 변환
+# 6. 검색된 문서 내용을 Context 문자열로 변환
 # ---------------------------------------------------------
 def format_documents(docs):
 
@@ -223,11 +210,36 @@ def ask_general_gemini(question, google_api_key):
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-3.6-flash",
-        temperature=0,
+        temperature=0.3,
         google_api_key=google_api_key,
     )
 
-    response = llm.invoke(question)
+    # 최근 대화 일부 포함
+    history_text = ""
+
+    for message in st.session_state.messages[-6:]:
+
+        if message["role"] == "user":
+            history_text += f"\n사용자: {message['content']}"
+
+        elif message["role"] == "assistant":
+            history_text += f"\nAI: {message['content']}"
+
+    prompt = f"""
+당신은 친절하고 정확한 AI 어시스턴트입니다.
+
+사용자의 질문에 자연스러운 한국어로 답하세요.
+
+[이전 대화]
+{history_text}
+
+[사용자 질문]
+{question}
+
+[답변]
+"""
+
+    response = llm.invoke(prompt)
 
     answer = extract_response_text(
         response.content
@@ -239,7 +251,7 @@ def ask_general_gemini(question, google_api_key):
 # ---------------------------------------------------------
 # 8. Gemini + RAG 질문
 # ---------------------------------------------------------
-def ask_gemini(question, vectordb, google_api_key):
+def ask_gemini_rag(question, vectordb, google_api_key):
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-3.6-flash",
@@ -247,9 +259,10 @@ def ask_gemini(question, vectordb, google_api_key):
         google_api_key=google_api_key,
     )
 
-    # 질문과 가장 관련된 chunk 5개 검색
+    # 문서 질문은 similarity 검색
     retriever = vectordb.as_retriever(
         search_type="similarity",
+
         search_kwargs={
             "k": 5
         },
@@ -263,23 +276,35 @@ def ask_gemini(question, vectordb, google_api_key):
         source_documents
     )
 
+    history_text = ""
+
+    for message in st.session_state.messages[-6:]:
+
+        if message["role"] == "user":
+            history_text += f"\n사용자: {message['content']}"
+
+        elif message["role"] == "assistant":
+            history_text += f"\nAI: {message['content']}"
+
     prompt = f"""
 당신은 업로드된 문서를 분석하여 질문에 답하는 RAG 챗봇입니다.
 
-아래의 [참고 문서]를 자세히 확인한 뒤
+아래 [참고 문서]를 자세히 확인한 뒤
 사용자의 질문에 답하세요.
 
-반드시 다음 규칙을 지키세요.
+반드시 다음 원칙을 지키세요.
 
-1. 먼저 참고 문서 안에서 질문과 관련된 내용을 찾으세요.
-2. 관련 정보가 있으면 그 내용을 근거로 정확하게 답하세요.
-3. 여러 참고 문서에 정보가 나뉘어 있으면 내용을 종합해서 답하세요.
-4. 참고 문서에 정말 관련 정보가 없는 경우에만
+1. 먼저 참고 문서에서 질문과 관련된 내용을 찾으세요.
+2. 관련 정보가 있다면 참고 문서 내용을 근거로 답하세요.
+3. 여러 참고 문서에 정보가 나뉘어 있다면 내용을 종합하세요.
+4. 문서에 정말로 관련 정보가 없을 때만
    "업로드된 문서에서 해당 정보를 찾을 수 없습니다."
    라고 답하세요.
-5. 문서에 없는 사실을 임의로 만들어내지 마세요.
-6. 질문과 직접 관련된 내용을 우선해서 설명하세요.
-7. 한국어로 자연스럽고 이해하기 쉽게 답하세요.
+5. 문서에 없는 정보를 임의로 만들어내지 마세요.
+6. 한국어로 자연스럽고 이해하기 쉽게 답하세요.
+
+[이전 대화]
+{history_text}
 
 [참고 문서]
 {context}
@@ -315,10 +340,9 @@ def main():
     )
 
     st.info(
-        "PDF, DOCX, PPTX 문서를 업로드한 뒤 "
-        "Process 버튼을 눌러주세요. "
-        "문서를 처리하지 않은 상태에서는 "
-        "일반 Gemini 질문도 가능합니다."
+        "일반 질문은 바로 할 수 있습니다. "
+        "PDF, DOCX, PPTX 문서 내용을 질문하려면 "
+        "문서를 업로드한 뒤 Process 버튼을 눌러주세요."
     )
 
 
@@ -326,17 +350,12 @@ def main():
     # Session State 초기화
     # -----------------------------------------------------
     if "messages" not in st.session_state:
-
         st.session_state.messages = []
 
-
     if "vectordb" not in st.session_state:
-
         st.session_state.vectordb = None
 
-
     if "processComplete" not in st.session_state:
-
         st.session_state.processComplete = False
 
 
@@ -351,11 +370,13 @@ def main():
 
         uploaded_files = st.file_uploader(
             "Drag and drop files here",
+
             type=[
                 "pdf",
                 "docx",
                 "pptx",
             ],
+
             accept_multiple_files=True,
         )
 
@@ -372,7 +393,7 @@ def main():
 
 
     # -----------------------------------------------------
-    # Process 버튼 클릭 시
+    # Process 버튼 클릭
     # -----------------------------------------------------
     if process:
 
@@ -403,36 +424,28 @@ def main():
             "문서를 읽고 벡터DB를 생성하고 있습니다..."
         ):
 
-            # 문서 읽기
             docs = get_text(
                 uploaded_files
             )
 
-
             if len(docs) == 0:
 
                 st.error(
-                    "문서에서 읽을 수 있는 "
-                    "텍스트가 없습니다."
+                    "문서에서 읽을 수 있는 텍스트가 없습니다."
                 )
 
                 st.stop()
 
 
-            # Chunk 생성
             text_chunks = get_text_chunks(
                 docs
             )
 
-
-            # FAISS 생성
             vectordb = get_vectorstore(
                 text_chunks
             )
 
-
             st.session_state.vectordb = vectordb
-
             st.session_state.processComplete = True
 
 
@@ -446,9 +459,7 @@ def main():
     # -----------------------------------------------------
     # 최초 AI 메시지
     # -----------------------------------------------------
-    if len(
-        st.session_state.messages
-    ) == 0:
+    if len(st.session_state.messages) == 0:
 
         st.session_state.messages.append(
             {
@@ -501,6 +512,21 @@ def main():
             st.markdown(query)
 
 
+        # API Key가 없으면 질문 불가
+        if not google_api_key:
+
+            with st.chat_message(
+                "assistant"
+            ):
+
+                st.warning(
+                    "먼저 왼쪽 사이드바에 "
+                    "Google API Key를 입력해 주세요."
+                )
+
+            return
+
+
         with st.chat_message(
             "assistant"
         ):
@@ -511,13 +537,12 @@ def main():
 
                 try:
 
-                    # -------------------------------------
-                    # 문서가 Process 된 경우
-                    # RAG 질문
-                    # -------------------------------------
+                    # -------------------------------------------------
+                    # 문서 Process 완료 상태 → RAG 질문
+                    # -------------------------------------------------
                     if st.session_state.processComplete:
 
-                        answer, source_documents = ask_gemini(
+                        answer, source_documents = ask_gemini_rag(
                             query,
                             st.session_state.vectordb,
                             google_api_key,
@@ -528,9 +553,9 @@ def main():
                         )
 
 
-                        # ---------------------------------
-                        # 참고 문서 표시
-                        # ---------------------------------
+                        # ---------------------------------------------
+                        # 참고 문서 출력
+                        # ---------------------------------------------
                         with st.expander(
                             "📑 참고 문서 확인"
                         ):
@@ -573,10 +598,9 @@ def main():
                                 st.divider()
 
 
-                    # -------------------------------------
-                    # 문서를 Process하지 않은 경우
-                    # Gemini 일반 질문
-                    # -------------------------------------
+                    # -------------------------------------------------
+                    # 문서 미처리 상태 → Gemini 일반 질문
+                    # -------------------------------------------------
                     else:
 
                         answer = ask_general_gemini(
@@ -589,7 +613,9 @@ def main():
                         )
 
 
+                    # -------------------------------------------------
                     # AI 답변 저장
+                    # -------------------------------------------------
                     st.session_state.messages.append(
                         {
                             "role": "assistant",
@@ -609,5 +635,4 @@ def main():
 # 프로그램 실행
 # ---------------------------------------------------------
 if __name__ == "__main__":
-
     main()
