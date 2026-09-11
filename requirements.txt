@@ -1,0 +1,14 @@
+streamlit
+tiktoken
+loguru
+langchain-core
+langchain-community
+langchain-google-genai
+langchain-text-splitters
+langchain-huggingface
+sentence-transformers
+faiss-cpu
+pypdf
+docx2txt
+unstructured
+python-pptx
