@@ -1,5 +1,6 @@
 import os
 import tempfile
+import re
 
 import streamlit as st
 import tiktoken
@@ -25,28 +26,24 @@ from langserve import RemoteRunnable
 # 설정
 # =========================================================
 
-# 우리가 만든 LangServe + ngrok 주소
 LANGSERVE_URL = (
     "https://zebra-attendee-koala.ngrok-free.dev/llm/"
 )
 
-# 개인화 Llama3를 원격 호출
 personal_llm = RemoteRunnable(
     LANGSERVE_URL
 )
 
 
 # =========================================================
-# 1. Gemini / LangChain 응답에서 텍스트만 추출
+# 응답에서 텍스트만 추출
 # =========================================================
 
 def extract_response_text(content):
 
-    # 일반 문자열
     if isinstance(content, str):
         return content
 
-    # Gemini 최신 content block
     if isinstance(content, list):
 
         texts = []
@@ -57,10 +54,7 @@ def extract_response_text(content):
 
                 if item.get("type") == "text":
 
-                    text = item.get(
-                        "text",
-                        ""
-                    )
+                    text = item.get("text", "")
 
                     if text:
                         texts.append(text)
@@ -72,11 +66,8 @@ def extract_response_text(content):
                 if text:
                     texts.append(text)
 
-        return "\n".join(
-            texts
-        ).strip()
+        return "\n".join(texts).strip()
 
-    # AIMessage 등
     if hasattr(content, "content"):
 
         return extract_response_text(
@@ -87,7 +78,34 @@ def extract_response_text(content):
 
 
 # =========================================================
-# 2. 토큰 길이 계산
+# 일반 질문의 이상한 개인화 말투 정리
+# =========================================================
+
+def clean_general_answer(answer):
+
+    answer = answer.strip()
+
+    # 미세조정 모델이 일반 질문에서도
+    # "제 대한민국..." 같은 패턴을 출력하는 경우 보정
+    replacements = {
+        "제대한민국": "대한민국",
+        "제 대한민국": "대한민국",
+        "저의 대한민국": "대한민국",
+        "내 대한민국": "대한민국",
+    }
+
+    for old, new in replacements.items():
+
+        answer = answer.replace(
+            old,
+            new
+        )
+
+    return answer
+
+
+# =========================================================
+# 토큰 길이
 # =========================================================
 
 def tiktoken_len(text):
@@ -96,14 +114,13 @@ def tiktoken_len(text):
         "cl100k_base"
     )
 
-    tokens = tokenizer.encode(text)
-
-    return len(tokens)
+    return len(
+        tokenizer.encode(text)
+    )
 
 
 # =========================================================
-# 3. 업로드 문서 읽기
-# PDF / DOCX / PPTX
+# 문서 읽기
 # =========================================================
 
 def get_text(docs):
@@ -118,7 +135,6 @@ def get_text(docs):
             file_name
         )[1]
 
-        # 업로드 파일 임시 저장
         with tempfile.NamedTemporaryFile(
             delete=False,
             suffix=suffix
@@ -128,9 +144,7 @@ def get_text(docs):
                 doc.getvalue()
             )
 
-            temp_path = (
-                temp_file.name
-            )
+            temp_path = temp_file.name
 
         logger.info(
             f"문서 처리 시작: {file_name}"
@@ -138,7 +152,6 @@ def get_text(docs):
 
         try:
 
-            # PDF
             if file_name.lower().endswith(
                 ".pdf"
             ):
@@ -147,11 +160,8 @@ def get_text(docs):
                     temp_path
                 )
 
-                documents = (
-                    loader.load()
-                )
+                documents = loader.load()
 
-            # Word
             elif file_name.lower().endswith(
                 ".docx"
             ):
@@ -160,11 +170,8 @@ def get_text(docs):
                     temp_path
                 )
 
-                documents = (
-                    loader.load()
-                )
+                documents = loader.load()
 
-            # PowerPoint
             elif file_name.lower().endswith(
                 ".pptx"
             ):
@@ -175,19 +182,19 @@ def get_text(docs):
                     )
                 )
 
-                documents = (
-                    loader.load()
-                )
+                documents = loader.load()
 
             else:
+
                 continue
 
-            # 실제 파일명을 출처로 저장
+
             for document in documents:
 
                 document.metadata[
                     "source"
                 ] = file_name
+
 
             doc_list.extend(
                 documents
@@ -196,18 +203,20 @@ def get_text(docs):
         finally:
 
             try:
+
                 os.remove(
                     temp_path
                 )
 
             except Exception:
+
                 pass
 
     return doc_list
 
 
 # =========================================================
-# 4. 문서 Chunk 분할
+# 문서 분할
 # =========================================================
 
 def get_text_chunks(text):
@@ -220,51 +229,43 @@ def get_text_chunks(text):
         )
     )
 
-    chunks = (
+    return (
         text_splitter
         .split_documents(text)
     )
 
-    return chunks
-
 
 # =========================================================
-# 5. FAISS VectorStore 생성
+# FAISS
 # =========================================================
 
 def get_vectorstore(text_chunks):
 
-    embeddings = (
-        HuggingFaceEmbeddings(
+    embeddings = HuggingFaceEmbeddings(
 
-            model_name=(
-                "jhgan/"
-                "ko-sroberta-multitask"
-            ),
+        model_name=(
+            "jhgan/"
+            "ko-sroberta-multitask"
+        ),
 
-            model_kwargs={
-                "device": "cpu"
-            },
+        model_kwargs={
+            "device": "cpu"
+        },
 
-            encode_kwargs={
-                "normalize_embeddings":
-                    True
-            },
-        )
+        encode_kwargs={
+            "normalize_embeddings":
+                True
+        },
     )
 
-    vectordb = (
-        FAISS.from_documents(
-            text_chunks,
-            embeddings
-        )
+    return FAISS.from_documents(
+        text_chunks,
+        embeddings
     )
-
-    return vectordb
 
 
 # =========================================================
-# 6. 검색 문서를 Context 문자열로 변환
+# 검색 문서 → Context
 # =========================================================
 
 def format_documents(docs):
@@ -273,18 +274,14 @@ def format_documents(docs):
 
     for i, doc in enumerate(docs):
 
-        source = (
-            doc.metadata.get(
-                "source",
-                "알 수 없음"
-            )
+        source = doc.metadata.get(
+            "source",
+            "알 수 없음"
         )
 
-        page = (
-            doc.metadata.get(
-                "page",
-                None
-            )
+        page = doc.metadata.get(
+            "page",
+            None
         )
 
         page_text = ""
@@ -292,16 +289,13 @@ def format_documents(docs):
         if page is not None:
 
             page_text = (
-                f"페이지: "
-                f"{page + 1}\n"
+                f"페이지: {page + 1}"
             )
 
         context += f"""
 
-[참고 문서 {i + 1}]
-
+[문서 {i + 1}]
 출처: {source}
-
 {page_text}
 
 {doc.page_content}
@@ -312,155 +306,80 @@ def format_documents(docs):
 
 
 # =========================================================
-# 7. 개인화 질문 판별
+# 개인화 질문 판별
 # =========================================================
 
 def is_personal_question(question):
 
-    personal_keywords = [
+    keywords = [
 
         "내 이름",
-        "이름이",
-        "이름은",
+        "제 이름",
+        "이름이 뭐",
+        "이름은 뭐",
 
-        "학번",
+        "내 학번",
+        "제 학번",
+        "학번은",
 
-        "전화번호",
-        "휴대폰",
+        "내 전화번호",
+        "제 전화번호",
+        "전화번호는",
+        "휴대폰 번호",
         "연락처",
 
-        "아버지",
-        "어머니",
-        "부모님",
-
-        "주소",
-        "거주지",
+        "내 주소",
+        "제 주소",
         "거주 지역",
+        "거주지",
 
-        "소속 대학교",
+        "내 출생지",
+        "제 출생지",
+        "출생지는",
+
+        "내 생년월일",
+        "제 생년월일",
+
+        "내 학교",
+        "제 학교",
         "소속대학교",
-        "학교 어디",
-        "대학교 어디",
-
-        "내 학력",
-        "최종 학력",
+        "소속 대학교",
 
         "내 전공",
+        "제 전공",
 
-        "생년월일",
+        "내 취미",
+        "제 취미",
 
-        "출생지",
+        "내 자격증",
+        "제 자격증",
 
-        "고향",
-
-        "취미",
-
-        "특기",
-
-        "자격증",
+        "아버지 이름",
+        "어머니 이름",
+        "부모님 이름",
     ]
 
-    question_lower = (
-        question.lower()
-    )
+    q = question.lower()
 
     return any(
-        keyword.lower()
-        in question_lower
-
-        for keyword
-        in personal_keywords
+        keyword.lower() in q
+        for keyword in keywords
     )
 
 
 # =========================================================
-# 8. llama3-personal 일반 호출
+# 개인화 질문
 # =========================================================
 
 def ask_personal_llm(question):
 
-    response = personal_llm.invoke(
-        question
-    )
-
-    return extract_response_text(
-        response
-    )
-
-
-# =========================================================
-# 9. Gemini 일반 질문
-# =========================================================
-
-def ask_general_gemini(
-    question,
-    google_api_key
-):
-
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-3.6-flash",
-        temperature=0.3,
-        google_api_key=google_api_key,
-    )
-
-    history_text = ""
-
-    for message in (
-        st.session_state
-        .messages[-6:]
-    ):
-
-        if (
-            message["role"]
-            == "user"
-        ):
-
-            history_text += (
-                "\n사용자: "
-                + message["content"]
-            )
-
-        elif (
-            message["role"]
-            == "assistant"
-        ):
-
-            history_text += (
-                "\nAI: "
-                + message["content"]
-            )
-
     prompt = f"""
-당신은 친절하고 정확한 AI 어시스턴트입니다.
+다음 질문은 사용자의 개인 정보에 관한 질문입니다.
 
-사용자의 질문에 자연스러운 한국어로 답하세요.
+당신이 학습한 개인화 데이터를 기준으로
+질문에 직접적으로 답하세요.
 
-[이전 대화]
-{history_text}
-
-[사용자 질문]
-{question}
-
-[답변]
-"""
-
-    response = llm.invoke(
-        prompt
-    )
-
-    return extract_response_text(
-        response.content
-    )
-
-
-# =========================================================
-# 10. 로컬 Llama3 일반 질문
-# =========================================================
-
-def ask_general_local(question):
-
-    prompt = f"""
-다음 질문에 정확하고 자연스러운 한국어로 답하세요.
+불필요한 일반 지식 설명은 하지 마세요.
 
 질문:
 {question}
@@ -478,7 +397,110 @@ def ask_general_local(question):
 
 
 # =========================================================
-# 11. Gemini + RAG
+# 일반 질문 - Local Llama3
+# =========================================================
+
+def ask_general_local(question):
+
+    prompt = f"""
+당신은 일반 지식 질문에 답하는 AI입니다.
+
+중요한 규칙:
+
+1. 이 질문은 사용자의 개인정보를 묻는 질문이 아닙니다.
+2. 일반적인 객관적 사실을 답하세요.
+3. 절대로 '제', '저의', '내', '나는' 등의
+   1인칭 표현으로 사실을 설명하지 마세요.
+4. 개인화 학습 데이터의 문장 형식을 따라 하지 마세요.
+5. 질문에 간결하고 자연스러운 한국어로 답하세요.
+
+예시:
+
+질문: 한국의 수도는?
+좋은 답변: 대한민국의 수도는 서울입니다.
+
+나쁜 답변:
+제 대한민국의 수도는 서울입니다.
+제 수도는 서울입니다.
+
+질문:
+{question}
+
+답변:
+"""
+
+    response = personal_llm.invoke(
+        prompt
+    )
+
+    answer = extract_response_text(
+        response
+    )
+
+    return clean_general_answer(
+        answer
+    )
+
+
+# =========================================================
+# 일반 질문 - Gemini
+# =========================================================
+
+def ask_general_gemini(
+    question,
+    google_api_key
+):
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-3.6-flash",
+        temperature=0.2,
+        google_api_key=google_api_key,
+    )
+
+    prompt = f"""
+다음 질문에 정확하고 자연스러운
+한국어로 답하세요.
+
+질문:
+{question}
+
+답변:
+"""
+
+    response = llm.invoke(
+        prompt
+    )
+
+    return extract_response_text(
+        response.content
+    )
+
+
+# =========================================================
+# RAG 검색
+# =========================================================
+
+def retrieve_documents(
+    question,
+    vectordb
+):
+
+    retriever = vectordb.as_retriever(
+
+        search_type="similarity",
+
+        search_kwargs={
+            "k": 5
+        },
+    )
+
+    return retriever.invoke(
+        question
+    )
+
+
+# =========================================================
+# RAG + Gemini
 # =========================================================
 
 def ask_gemini_rag(
@@ -487,28 +509,10 @@ def ask_gemini_rag(
     google_api_key
 ):
 
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-3.6-flash",
-        temperature=0,
-        google_api_key=google_api_key,
-    )
-
-    retriever = (
-        vectordb.as_retriever(
-
-            search_type=(
-                "similarity"
-            ),
-
-            search_kwargs={
-                "k": 5
-            },
-        )
-    )
-
     source_documents = (
-        retriever.invoke(
-            question
+        retrieve_documents(
+            question,
+            vectordb
         )
     )
 
@@ -516,30 +520,34 @@ def ask_gemini_rag(
         source_documents
     )
 
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-3.6-flash",
+        temperature=0,
+        google_api_key=google_api_key,
+    )
+
     prompt = f"""
-당신은 업로드된 문서를 분석하여
-질문에 답하는 RAG 챗봇입니다.
+아래에는 업로드된 문서에서
+검색한 내용이 있습니다.
 
-아래 참고 문서를 자세히 확인한 뒤
-사용자의 질문에 답하세요.
+먼저 검색된 문서가 사용자의 질문과
+실제로 관련이 있는지 판단하세요.
 
-규칙:
+관련이 있다면:
+- 문서의 내용을 우선하여 답하세요.
+- 문서에 있는 사실을 정확하게 사용하세요.
 
-1. 참고 문서에서 질문과 관련된 내용을 먼저 찾으세요.
-2. 관련 정보가 있으면 문서 내용을 근거로 정확하게 답하세요.
-3. 여러 문서에 정보가 나뉘어 있으면 종합해서 답하세요.
-4. 관련 정보가 정말 없을 때만
-   "업로드된 문서에서 해당 정보를 찾을 수 없습니다."
-   라고 답하세요.
-5. 문서에 없는 내용을 임의로 만들어내지 마세요.
-6. 한국어로 자연스럽게 답하세요.
+관련이 없다면:
+- 문서 내용을 억지로 사용하지 말고
+  일반 지식을 이용하여 질문에 답하세요.
 
-[참고 문서]
+문서에 없는 사실을
+문서에서 찾았다고 말해서는 안 됩니다.
 
+[검색된 문서]
 {context}
 
-[사용자 질문]
-
+[질문]
 {question}
 
 [답변]
@@ -560,8 +568,7 @@ def ask_gemini_rag(
 
 
 # =========================================================
-# 12. llama3-personal + RAG
-# Gemini API Key가 없을 때 사용
+# RAG + Personal Llama3
 # =========================================================
 
 def ask_local_rag(
@@ -569,22 +576,10 @@ def ask_local_rag(
     vectordb
 ):
 
-    retriever = (
-        vectordb.as_retriever(
-
-            search_type=(
-                "similarity"
-            ),
-
-            search_kwargs={
-                "k": 5
-            },
-        )
-    )
-
     source_documents = (
-        retriever.invoke(
-            question
+        retrieve_documents(
+            question,
+            vectordb
         )
     )
 
@@ -593,23 +588,29 @@ def ask_local_rag(
     )
 
     prompt = f"""
-당신은 문서 기반 질의응답 AI입니다.
+당신은 문서 검색 기능이 있는 AI입니다.
 
-아래 참고 문서를 읽고
-질문에 답하세요.
+아래는 업로드된 문서에서
+질문과 관련성이 높은 부분을 검색한 결과입니다.
 
-문서에 답이 있는 경우에는
-반드시 문서 내용을 우선 사용하세요.
+먼저 검색 내용이 질문과
+실제로 관련 있는지 판단하세요.
 
-문서에 없는 내용을
-임의로 만들어내지 마세요.
+관련 있다면:
+문서의 내용을 근거로 답하세요.
 
-[참고 문서]
+관련이 없다면:
+검색 내용을 억지로 사용하지 말고
+일반 지식을 이용하여 답하세요.
 
+일반 지식으로 답할 때에는
+'제', '저의', '내' 등의
+개인화된 1인칭 표현을 사용하지 마세요.
+
+[검색 문서]
 {context}
 
 [질문]
-
 {question}
 
 [답변]
@@ -623,6 +624,10 @@ def ask_local_rag(
         response
     )
 
+    answer = clean_general_answer(
+        answer
+    )
+
     return (
         answer,
         source_documents
@@ -630,222 +635,93 @@ def ask_local_rag(
 
 
 # =========================================================
-# 13. 참고 문서 출력
-# =========================================================
-
-def show_source_documents(
-    source_documents
-):
-
-    with st.expander(
-        "📑 참고 문서 확인"
-    ):
-
-        for i, doc in enumerate(
-            source_documents
-        ):
-
-            source = (
-                doc.metadata.get(
-                    "source",
-                    "알 수 없음"
-                )
-            )
-
-            page = (
-                doc.metadata.get(
-                    "page",
-                    None
-                )
-            )
-
-            st.markdown(
-                f"### 참고 문서 "
-                f"{i + 1}"
-            )
-
-            st.write(
-                f"출처: {source}"
-            )
-
-            if page is not None:
-
-                st.write(
-                    f"페이지: "
-                    f"{page + 1}"
-                )
-
-            st.write(
-                doc.page_content
-            )
-
-            st.divider()
-
-
-# =========================================================
-# 14. Streamlit Main
+# Streamlit
 # =========================================================
 
 def main():
 
     st.set_page_config(
-        page_title=(
-            "Personal AI RAG"
-        ),
-        page_icon="🤖",
+        page_title="RAG Chat",
+        page_icon="📚",
         layout="wide",
     )
 
-    st.title(
-        "🤖 Personal AI + RAG Chat"
-    )
 
-    st.info(
-        "Google API Key는 선택사항입니다. "
-        "API Key가 있으면 Gemini를 사용하고, "
-        "없으면 개인화 Llama3를 사용합니다. "
-        "PDF/DOCX/PPTX도 업로드할 수 있습니다."
-    )
+    # -------------------------
+    # Session
+    # -------------------------
 
-
-    # -----------------------------------------------------
-    # Session State
-    # -----------------------------------------------------
-
-    if (
-        "messages"
-        not in st.session_state
-    ):
+    if "messages" not in st.session_state:
 
         st.session_state.messages = []
 
 
-    if (
-        "vectordb"
-        not in st.session_state
-    ):
+    if "vectordb" not in st.session_state:
 
         st.session_state.vectordb = None
 
 
-    if (
-        "processComplete"
-        not in st.session_state
-    ):
+    if "processComplete" not in st.session_state:
 
-        st.session_state.processComplete = (
-            False
-        )
+        st.session_state.processComplete = False
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # Sidebar
-    # -----------------------------------------------------
+    # 교수님 예제처럼 최소한만 표시
+    # =====================================================
 
     with st.sidebar:
 
-        st.header(
-            "📂 문서 업로드"
+        uploaded_files = st.file_uploader(
+
+            "Upload your file",
+
+            type=[
+                "pdf",
+                "docx",
+                "pptx"
+            ],
+
+            accept_multiple_files=True,
         )
 
-        uploaded_files = (
-            st.file_uploader(
-
-                "PDF / DOCX / PPTX",
-
-                type=[
-                    "pdf",
-                    "docx",
-                    "pptx",
-                ],
-
-                accept_multiple_files=True,
-            )
-        )
-
-        st.divider()
-
-        st.subheader(
-            "🔑 Gemini API"
-        )
-
-        google_api_key = (
-            st.text_input(
-                "Google API Key "
-                "(선택사항)",
-
-                type="password",
-
-                key=(
-                    "chatbot_api_key"
-                ),
-            )
-        )
-
-        if google_api_key:
-
-            st.success(
-                "Gemini 모드 사용 가능"
-            )
-
-        else:
-
-            st.info(
-                "API Key 없음 → "
-                "llama3-personal 사용"
-            )
-
-        st.divider()
 
         process = st.button(
-            "Process",
-            use_container_width=True,
+            "Process"
         )
 
 
-    # -----------------------------------------------------
-    # 문서 Process
-    # -----------------------------------------------------
+        google_api_key = st.text_input(
+
+            "Google API Key (optional)",
+
+            type="password"
+        )
+
+
+    # =====================================================
+    # Process
+    # =====================================================
 
     if process:
 
-        if not uploaded_files:
-
-            st.warning(
-                "먼저 문서를 "
-                "업로드해 주세요."
-            )
-
-        else:
+        if uploaded_files:
 
             with st.spinner(
-                "문서를 분석하고 "
-                "벡터DB를 생성 중입니다..."
+                "Processing..."
             ):
 
                 docs = get_text(
                     uploaded_files
                 )
 
-                if len(docs) == 0:
-
-                    st.error(
-                        "읽을 수 있는 "
-                        "텍스트가 없습니다."
-                    )
-
-                    st.stop()
-
-                text_chunks = (
-                    get_text_chunks(
-                        docs
-                    )
+                chunks = get_text_chunks(
+                    docs
                 )
 
-                vectordb = (
-                    get_vectorstore(
-                        text_chunks
-                    )
+                vectordb = get_vectorstore(
+                    chunks
                 )
 
                 st.session_state.vectordb = (
@@ -856,41 +732,25 @@ def main():
                     True
                 )
 
-            st.success(
-                f"문서 처리 완료! "
-                f"{len(docs)}개 페이지/요소, "
-                f"{len(text_chunks)}개 Chunk"
-            )
 
+    # =====================================================
+    # 최초 메시지
+    # =====================================================
 
-    # -----------------------------------------------------
-    # 최초 AI 메시지
-    # -----------------------------------------------------
-
-    if (
-        len(
-            st.session_state.messages
-        )
-        == 0
-    ):
+    if not st.session_state.messages:
 
         st.session_state.messages.append(
             {
                 "role": "assistant",
-
                 "content":
-                    "안녕하세요! 👋\n\n"
-                    "• 개인화 질문\n"
-                    "• 일반 질문\n"
-                    "• 업로드 문서 질문\n\n"
-                    "모두 가능합니다."
+                    "안녕하세요. 무엇이 궁금하신가요?"
             }
         )
 
 
-    # -----------------------------------------------------
-    # 기존 채팅 출력
-    # -----------------------------------------------------
+    # =====================================================
+    # 기존 대화
+    # =====================================================
 
     for message in (
         st.session_state.messages
@@ -905,12 +765,12 @@ def main():
             )
 
 
-    # -----------------------------------------------------
-    # 질문 입력
-    # -----------------------------------------------------
+    # =====================================================
+    # 입력
+    # =====================================================
 
     query = st.chat_input(
-        "질문을 입력해 주세요."
+        "메시지를 입력해 주세요"
     )
 
 
@@ -923,9 +783,8 @@ def main():
             }
         )
 
-        with st.chat_message(
-            "user"
-        ):
+
+        with st.chat_message("user"):
 
             st.markdown(
                 query
@@ -942,12 +801,9 @@ def main():
 
                 try:
 
-                    source_documents = None
-
-
-                    # =====================================
-                    # A. 개인화 질문
-                    # =====================================
+                    # -------------------------------------
+                    # 1. 개인화 질문
+                    # -------------------------------------
 
                     if is_personal_question(
                         query
@@ -959,71 +815,51 @@ def main():
                             )
                         )
 
-                        st.caption(
-                            "🦙 "
-                            "Personal Llama3"
-                        )
 
-
-                    # =====================================
-                    # B. 문서가 Process 되어 있음
-                    # =====================================
+                    # -------------------------------------
+                    # 2. 문서가 있음
+                    # -------------------------------------
 
                     elif (
                         st.session_state
                         .processComplete
                     ):
 
-                        # Gemini API Key 있음
+                        # Gemini Key 있음
                         if google_api_key:
 
-                            (
-                                answer,
-                                source_documents
-                            ) = ask_gemini_rag(
+                            answer, _ = (
+                                ask_gemini_rag(
+                                    query,
 
-                                query,
+                                    st.session_state
+                                    .vectordb,
 
-                                st.session_state
-                                .vectordb,
-
-                                google_api_key,
-                            )
-
-                            st.caption(
-                                "📚 "
-                                "RAG + Gemini"
+                                    google_api_key,
+                                )
                             )
 
 
-                        # Gemini API Key 없음
+                        # Gemini Key 없음
                         else:
 
-                            (
-                                answer,
-                                source_documents
-                            ) = ask_local_rag(
+                            answer, _ = (
+                                ask_local_rag(
+                                    query,
 
-                                query,
-
-                                st.session_state
-                                .vectordb,
-                            )
-
-                            st.caption(
-                                "📚 "
-                                "RAG + "
-                                "Personal Llama3"
+                                    st.session_state
+                                    .vectordb,
+                                )
                             )
 
 
-                    # =====================================
-                    # C. 문서 없음 → 일반 질문
-                    # =====================================
+                    # -------------------------------------
+                    # 3. 문서 없음
+                    # -------------------------------------
 
                     else:
 
-                        # Gemini 있음
+                        # Gemini 사용
                         if google_api_key:
 
                             answer = (
@@ -1033,12 +869,8 @@ def main():
                                 )
                             )
 
-                            st.caption(
-                                "✨ Gemini"
-                            )
 
-
-                        # Gemini 없음
+                        # 개인 Llama3 일반 질문
                         else:
 
                             answer = (
@@ -1047,35 +879,15 @@ def main():
                                 )
                             )
 
-                            st.caption(
-                                "🦙 "
-                                "Personal Llama3"
-                            )
-
 
                     # -------------------------------------
-                    # 답변 출력
+                    # 출력
                     # -------------------------------------
 
                     st.markdown(
                         answer
                     )
 
-
-                    # -------------------------------------
-                    # 참고 문서 표시
-                    # -------------------------------------
-
-                    if source_documents:
-
-                        show_source_documents(
-                            source_documents
-                        )
-
-
-                    # -------------------------------------
-                    # 답변 저장
-                    # -------------------------------------
 
                     st.session_state.messages.append(
                         {
@@ -1088,19 +900,12 @@ def main():
                 except Exception as e:
 
                     st.error(
-                        "답변 생성 중 "
-                        f"오류가 발생했습니다:\n\n{e}"
-                    )
-
-                    st.info(
-                        "Google API Key를 사용하지 않는 경우 "
-                        "PC에서 Ollama, LangServe, ngrok이 "
-                        "모두 실행 중인지 확인하세요."
+                        f"오류가 발생했습니다: {e}"
                     )
 
 
 # =========================================================
-# 프로그램 시작
+# 실행
 # =========================================================
 
 if __name__ == "__main__":
